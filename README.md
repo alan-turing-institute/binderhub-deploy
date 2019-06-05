@@ -206,6 +206,10 @@ These should be copied into the "Service Principal App ID", "Service Principal A
 
 **Keep this information safe as the password cannot be recovered after this step!**
 
+### Optional
+
+:construction: If you want to set the continuous integration / delivery using Azure pipelines you can follow the instructions in [this tutorial](./CI/tutorial.md). 
+
 ## Contributors
 
 We would like to acknowledge and thank the following people for their contributions:
