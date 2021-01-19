@@ -212,6 +212,9 @@ else
 		ENABLE_HTTPS \
 		RESOURCE_GROUP_LOCATION \
 		RESOURCE_GROUP_NAME \
+		SP_APP_ID \
+		SP_APP_KEY \
+		SP_TENANT_ID \
 		"
 
 	for required_var in $REQUIREDVARS; do
@@ -226,9 +229,6 @@ else
 	# possibly due to an invalid json file, they will be returned as a
 	# zero-length string -- this is attempting to make the 'not set'
 	# value the same in either case
-	if [ x${SP_APP_ID} == 'xnull' ]; then SP_APP_ID=''; fi
-	if [ x${SP_APP_KEY} == 'xnull' ]; then SP_APP_KEY=''; fi
-	if [ x${SP_TENANT_ID} == 'xnull' ]; then SP_TENANT_ID=''; fi
 	if [ x${LOG_TO_BLOB_STORAGE} == 'xnull' ]; then LOG_TO_BLOB_STORAGE=''; fi
 
 	# Test value of CONTAINER_REGISTRY. Must be either "dockerhub" or "azurecr"
@@ -271,8 +271,6 @@ else
 		REQUIREDVARS=" \
 			REGISTRY_NAME \
 			REGISTRY_SKU \
-			SP_APP_ID \
-			SP_APP_KEY \
 			"
 
 		for required_var in $REQUIREDVARS; do
@@ -379,141 +377,71 @@ AKS_NAME=$(echo ${BINDERHUB_NAME} | tr -cd '[:alnum:]-' | cut -c 1-59)-AKS
 # Format BinderHub name for Kubernetes
 HELM_BINDERHUB_NAME=$(echo ${BINDERHUB_NAME} | tr -cd '[:alnum:]-.' | tr '[:upper:]' '[:lower:]' | sed -E -e 's/^([.-]+)//' -e 's/([.-]+)$//')
 
-# Azure login will be different depending on whether this script is running
-# with or without service principal details supplied.
-#
-# If all the SP environments are set, use those. Otherwise, fall back to an
-# interactive login.
+# Deploy infrastructure using terraform
+cd "${DIR}/terraform"
+terraform init
+terraform apply \
+  -var="az_sub=${AZURE_SUBSCRIPTION}" \
+  -var="az_sp_id=${SP_APP_ID}" \
+  -var="az_sp_password=${SP_APP_KEY}" \
+  -var="az_tenant_id=${SP_TENANT_ID}" \
+  -var="resource_group=${RESOURCE_GROUP_NAME}" \
+  -var="location=${RESOURCE_GROUP_LOCATION}" \
+  -var="aks_name=${AKS_NAME}" \
+  -var="binderhub_name=${HELM_BINDERHUB_NAME}" \
+  -auto-approve
+cd "${DIR}"
 
-if [ -z $SP_APP_ID ] || [ -z $SP_APP_KEY ] || [ -z $SP_TENANT_ID ]; then
-	echo "--> Attempting to log in to Azure as a user"
-	if ! az login -o none; then
-		echo "--> Unable to connect to Azure" >&2
-		exit 1
-	else
-		echo "--> Logged in to Azure"
-	fi
-else
-	echo "--> Attempting to log in to Azure with provided Service Principal"
-	if ! az login --service-principal -u "${SP_APP_ID}" -p "${SP_APP_KEY}" -t "${SP_TENANT_ID}"; then
-		echo "--> Unable to connect to Azure" >&2
-		exit 1
-	else
-		echo "--> Logged in to Azure"
-		# Use this service principal for AKS creation
-		AKS_SP="--service-principal ${SP_APP_ID} --client-secret ${SP_APP_KEY}"
-	fi
-fi
+# # Assign Contributor role to Service Principal
+# az role assignment create --assignee ${SP_APP_ID} --scope ${VNET_ID} --role Contributor -o table | tee contributor-role-assignment.log
 
-# Activate chosen subscription
-echo "--> Activating Azure subscription: ${AZURE_SUBSCRIPTION}"
-az account set -s "$AZURE_SUBSCRIPTION"
+# # If Azure container registry is required, create an ACR and give Service Principal AcrPush role.
+# if [ x${CONTAINER_REGISTRY} == 'xazurecr' ]; then
+# 	echo "--> Checking ACR name availability"
+# 	REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
+# 	while [ ${REGISTRY_NAME_AVAIL} == false ]; do
+# 		echo "--> Name ${REGISTRY_NAME} not available. Appending 4 random characters."
+# 		REGISTRY_NAME="$(echo ${REGISTRY_NAME} | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]' | cut -c -50)$(openssl rand -hex 2)"
+# 		echo "--> New name: ${REGISTRY_NAME}"
+# 		REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
+# 	done
+# 	echo "--> Name available"
 
-# Create a new resource group if necessary
-echo "--> Checking if resource group exists: ${RESOURCE_GROUP_NAME}"
-if [[ $(az group exists --name $RESOURCE_GROUP_NAME) == false ]]; then
-	echo "--> Creating new resource group: ${RESOURCE_GROUP_NAME}"
-	az group create -n $RESOURCE_GROUP_NAME --location $RESOURCE_GROUP_LOCATION -o table | tee rg-create.log
-else
-	echo "--> Resource group ${RESOURCE_GROUP_NAME} found"
-fi
+# 	echo "--> Creating ACR"
+# 	az acr create -n $REGISTRY_NAME -g $RESOURCE_GROUP_NAME --sku $REGISTRY_SKU -o table | tee acr-create.log
 
-# Create a Virtual Network to deploy the k8s cluster into
-echo "--> Creating a Virtual Network and subnet"
-az network vnet create \
-	-g ${RESOURCE_GROUP_NAME} \
-	-n ${BINDERHUB_NAME}-vnet \
-	--address-prefixes 10.0.0.0/8 \
-	--subnet-name ${BINDERHUB_NAME}-subnet \
-	--subnet-prefix 10.240.0.0/16 \
-	-o table | tee create-vnet.log
-echo "--> Retrieving the Virtual Network application ID"
-VNET_ID=$(az network vnet show -g ${RESOURCE_GROUP_NAME} -n ${BINDERHUB_NAME}-vnet --query id -o tsv)
-echo "--> Retrieving the subnet application ID"
-SUBNET_ID=$(az network vnet subnet show -g ${RESOURCE_GROUP_NAME} --vnet-name ${BINDERHUB_NAME}-vnet -n ${BINDERHUB_NAME}-subnet --query id -o tsv)
+# 	# Populating some variables
+# 	ACR_LOGIN_SERVER=$(az acr list -g ${RESOURCE_GROUP_NAME} --query '[].{acrLoginServer:loginServer}' -o tsv)
+# 	ACR_ID=$(az acr show -n ${REGISTRY_NAME} -g ${RESOURCE_GROUP_NAME} --query 'id' -o tsv)
 
-# If no Service Principal is provided, create one
-if [ -z "${SP_APP_ID}" ] && [ -z "${SP_APP_KEY}" ]; then
-	SP_NAME='binderhub-sp'
-	echo "--> Creating Service Principal ${SP_NAME}"
-	SP_APP_KEY=$(az ad sp create-for-rbac -n http://${SP_NAME} --skip-assignment --query password -o tsv)
-	SP_APP_ID=$(az ad sp show --id http://${SP_NAME} --query appId -o tsv)
-	echo "Waiting for Service Principal to propagate"
-	sleep 15
-	AKS_SP="--service-principal ${SP_APP_ID} --client-secret ${SP_APP_KEY}"
-fi
+# 	# Assigning AcrPush role to Service Principal using AcrPush's specific object-ID
+# 	echo "--> Assigning AcrPush role to Service Principal"
+# 	az role assignment create --assignee ${SP_APP_ID} --role 8311e382-0749-4cb8-b61a-304f252e45ec --scope $ACR_ID -o table | tee acrpush-role-assignment.log
 
-# Assign Contributor role to Service Principal
-az role assignment create --assignee ${SP_APP_ID} --scope ${VNET_ID} --role Contributor -o table | tee contributor-role-assignment.log
+# 	# Reassign IMAGE_PREFIX to conform with BinderHub's expectation:
+# 	# <container-registry>/<project-id>/<prefix>-name:tag
+# 	IMAGE_PREFIX=${BINDERHUB_NAME}/${IMAGE_PREFIX}
+# fi
 
-# If Azure container registry is required, create an ACR and give Service Principal AcrPush role.
-if [ x${CONTAINER_REGISTRY} == 'xazurecr' ]; then
-	echo "--> Checking ACR name availability"
-	REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
-	while [ ${REGISTRY_NAME_AVAIL} == false ]; do
-		echo "--> Name ${REGISTRY_NAME} not available. Appending 4 random characters."
-		REGISTRY_NAME="$(echo ${REGISTRY_NAME} | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]' | cut -c -50)$(openssl rand -hex 2)"
-		echo "--> New name: ${REGISTRY_NAME}"
-		REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
-	done
-	echo "--> Name available"
+# # If HTTPS is required, set up a DNS zone and empty A records
+# if [[ -n $ENABLE_HTTPS ]]; then
+# 	# Create a DNS zone
+# 	az network dns zone create -g $RESOURCE_GROUP_NAME -n $DOMAIN_NAME -o table | tee create-dns-zone.log
 
-	echo "--> Creating ACR"
-	az acr create -n $REGISTRY_NAME -g $RESOURCE_GROUP_NAME --sku $REGISTRY_SKU -o table | tee acr-create.log
+# 	# Echo name name servers
+# 	NAME_SERVERS=$(az network dns zone show -g $RESOURCE_GROUP_NAME -n $DOMAIN_NAME --query nameServers -o tsv)
+# 	printf "Please update your parent domain with the following name servers:\n%s" "${NAME_SERVERS}" | tee name-servers.log
 
-	# Populating some variables
-	ACR_LOGIN_SERVER=$(az acr list -g ${RESOURCE_GROUP_NAME} --query '[].{acrLoginServer:loginServer}' -o tsv)
-	ACR_ID=$(az acr show -n ${REGISTRY_NAME} -g ${RESOURCE_GROUP_NAME} --query 'id' -o tsv)
+# 	# Create empty A records for the binder and hub pods
+# 	az network dns record-set a create -g $RESOURCE_GROUP_NAME -z $DOMAIN_NAME --ttl 300 -n binder -o table | tee create-binder-a-record.log
+# 	az network dns record-set a create -g $RESOURCE_GROUP_NAME -z $DOMAIN_NAME --ttl 300 -n hub -o table | tee create-hub-a-record.log
 
-	# Assigning AcrPush role to Service Principal using AcrPush's specific object-ID
-	echo "--> Assigning AcrPush role to Service Principal"
-	az role assignment create --assignee ${SP_APP_ID} --role 8311e382-0749-4cb8-b61a-304f252e45ec --scope $ACR_ID -o table | tee acrpush-role-assignment.log
-
-	# Reassign IMAGE_PREFIX to conform with BinderHub's expectation:
-	# <container-registry>/<project-id>/<prefix>-name:tag
-	IMAGE_PREFIX=${BINDERHUB_NAME}/${IMAGE_PREFIX}
-fi
-
-# If HTTPS is required, set up a DNS zone and empty A records
-if [[ -n $ENABLE_HTTPS ]]; then
-	# Create a DNS zone
-	az network dns zone create -g $RESOURCE_GROUP_NAME -n $DOMAIN_NAME -o table | tee create-dns-zone.log
-
-	# Echo name name servers
-	NAME_SERVERS=$(az network dns zone show -g $RESOURCE_GROUP_NAME -n $DOMAIN_NAME --query nameServers -o tsv)
-	printf "Please update your parent domain with the following name servers:\n%s" "${NAME_SERVERS}" | tee name-servers.log
-
-	# Create empty A records for the binder and hub pods
-	az network dns record-set a create -g $RESOURCE_GROUP_NAME -z $DOMAIN_NAME --ttl 300 -n binder -o table | tee create-binder-a-record.log
-	az network dns record-set a create -g $RESOURCE_GROUP_NAME -z $DOMAIN_NAME --ttl 300 -n hub -o table | tee create-hub-a-record.log
-
-	# Set some extra variables
-	BINDER_HOST="binder.${DOMAIN_NAME}"
-	HUB_HOST="hub.${DOMAIN_NAME}"
-	BINDER_SECRET="${HELM_BINDERHUB_NAME}-binder-secret"
-	HUB_SECRET="${HELM_BINDERHUB_NAME}-hub-secret"
-fi
-
-# Create an AKS cluster
-echo "--> Creating AKS cluster; this may take a few minutes to complete
-Resource Group: ${RESOURCE_GROUP_NAME}
-Cluster name:   ${AKS_NAME}
-Node count:     ${AKS_NODE_COUNT}
-Node VM size:   ${AKS_NODE_VM_SIZE}"
-az aks create \
-	-n $AKS_NAME \
-	-g $RESOURCE_GROUP_NAME \
-	--generate-ssh-keys \
-	--node-count $AKS_NODE_COUNT \
-	--node-vm-size $AKS_NODE_VM_SIZE \
-	--dns-service-ip 10.0.0.10 \
-	--docker-bridge-address 172.17.0.1/16 \
-	--network-plugin azure \
-	--network-policy azure \
-	--service-cidr 10.0.0.0/16 \
-	--vnet-subnet-id $SUBNET_ID \
-	-o table ${AKS_SP} |
-	tee aks-create.log
+# 	# Set some extra variables
+# 	BINDER_HOST="binder.${DOMAIN_NAME}"
+# 	HUB_HOST="hub.${DOMAIN_NAME}"
+# 	BINDER_SECRET="${HELM_BINDERHUB_NAME}-binder-secret"
+# 	HUB_SECRET="${HELM_BINDERHUB_NAME}-hub-secret"
+# fi
 
 # Get kubectl credentials from Azure
 echo "--> Fetching kubectl credentials from Azure"

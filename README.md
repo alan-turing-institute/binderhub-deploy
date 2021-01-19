@@ -98,9 +98,9 @@ Fill the quotation marks with your desired namespaces, etc.
     "location": "",                // Azure Data Centre region
     "node_count": 1,               // Number of nodes to deploy. 3 is preferrable for a stable cluster, but may be liable to caps.
     "vm_size": "Standard_D2s_v3",  // Azure virtual machine type to deploy
-    "sp_app_id": null,             // Azure service principal ID (optional)
-    "sp_app_key": null,            // Azure service principal password (optional)
-    "sp_tenant_id": null,          // Azure tenant ID (optional)
+    "sp_app_id": "",             // Azure service principal ID
+    "sp_app_key": "",            // Azure service principal password
+    "sp_tenant_id": "",          // Azure tenant ID
     "log_to_blob_storage": false   // Store logs in blob storage when not running from a container
   },
   "binderhub": {
