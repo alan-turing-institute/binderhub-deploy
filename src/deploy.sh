@@ -532,14 +532,6 @@ echo "--> Cluster node status:"
 kubectl get node | tee kubectl-status.log
 echo
 
-# Setup ServiceAccount for tiller
-echo "--> Setting up tiller service account"
-kubectl --namespace kube-system create serviceaccount tiller | tee tiller-service-account.log
-
-# Give the ServiceAccount full permissions to manage the cluster
-echo "--> Giving the ServiceAccount full permissions to manage the cluster"
-kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller | tee cluster-role-bindings.log
-
 # Check helm installation
 helm=$(command -v helm3 || command -v helm)
 HELM_VERSION=$($helm version -c --short | cut -f1 -d".")
@@ -563,24 +555,24 @@ secretToken=$(openssl rand -hex 32)
 $helm repo add jupyterhub https://jupyterhub.github.io/helm-chart
 $helm repo update
 
-# If HTTPS is enabled, get nginx-ingress and cert-manager helm charts and
+# If HTTPS is enabled, get ingress-nginx and cert-manager helm charts and
 # install them into the hub namespace
 if [[ -n $ENABLE_HTTPS ]]; then
-	echo "--> Add nginx-ingress and cert-manager helm repos"
-	$helm repo add stable https://kubernetes-charts.storage.googleapis.com
+	echo "--> Add ingress-nginx and cert-manager helm repos"
+	$helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 	$helm repo add jetstack https://charts.jetstack.io
 	$helm repo update
-	kubectl apply --validate=false -f ${CERTMANAGER_CRDS}
 
-	echo "--> Install nginx-ingress helm chart"
-	$helm install nginx-ingress stable/nginx-ingress \
+	echo "--> Install ingress-nginx helm chart"
+	$helm install ingress-nginx ingress-nginx/ingress-nginx \
 		--namespace ${HELM_BINDERHUB_NAME} \
 		--version ${NGINX_VERSION} \
 		--create-namespace \
 		--timeout 10m0s \
 		--wait | tee nginx-chart-install.log
 
-	echo "--> Install cert-manager helm chart"
+	echo "--> Install cert-manager Custom Resource Definitions and helm chart"
+	kubectl apply --validate=false -f ${CERTMANAGER_CRDS}
 	$helm install cert-manager jetstack/cert-manager \
 		--namespace ${HELM_BINDERHUB_NAME} \
 		--version ${CERTMANAGER_VERSION} \
@@ -588,7 +580,7 @@ if [[ -n $ENABLE_HTTPS ]]; then
 		--timeout 10m0s \
 		--wait | tee cert-manager-chart-install.log
 
-	LOAD_BALANCER_IP=$(kubectl get svc nginx-ingress-controller -n ${HELM_BINDERHUB_NAME} | awk '{ print $4}' | tail -n 1)
+	LOAD_BALANCER_IP=$(kubectl get svc ingress-nginx-controller -n ${HELM_BINDERHUB_NAME} | awk '{ print $4}' | tail -n 1)
 
 	echo "--> cert-manager pods status:"
 	kubectl get pods --namespace $HELM_BINDERHUB_NAME | tee cert-manager-get-pods.log
