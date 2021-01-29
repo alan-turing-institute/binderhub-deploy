@@ -281,7 +281,7 @@ else
 		done
 
 		# ACR name must be alphanumeric only and 50 characters or less
-		REGISTRY_NAME=$(echo ${REGISTRY_NAME} | tr -cd '[:alnum:]' | cut -c -50)
+		REGISTRY_NAME=$(echo ${REGISTRY_NAME} | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]' | cut -c -50)
 
 		echo "--> Configuration read in:
 			AKS_NODE_COUNT: ${AKS_NODE_COUNT}
@@ -377,6 +377,14 @@ AKS_NAME=$(echo ${BINDERHUB_NAME} | tr -cd '[:alnum:]-' | cut -c 1-59)-AKS
 # Format BinderHub name for Kubernetes
 HELM_BINDERHUB_NAME=$(echo ${BINDERHUB_NAME} | tr -cd '[:alnum:]-.' | tr '[:upper:]' '[:lower:]' | sed -E -e 's/^([.-]+)//' -e 's/([.-]+)$//')
 
+# Define extra terraform vars based on options
+if [ x${CONTAINER_REGISTRY} == 'xazurecr' ]; then
+  ACR_TFVARS=(-var="enable_acr=true" -var="registry_name=${REGISTRY_NAME}" -var="registry_sku=${REGISTRY_SKU}")
+else
+  ACR_TFVARS=""
+fi
+
+
 # Deploy infrastructure using terraform
 cd "${DIR}/terraform"
 terraform init
@@ -389,39 +397,21 @@ terraform apply \
   -var="location=${RESOURCE_GROUP_LOCATION}" \
   -var="aks_name=${AKS_NAME}" \
   -var="binderhub_name=${HELM_BINDERHUB_NAME}" \
-  -auto-approve
+  -auto-approve \
+  ${ACR_TFVARS}
 cd "${DIR}"
 
-# # Assign Contributor role to Service Principal
-# az role assignment create --assignee ${SP_APP_ID} --scope ${VNET_ID} --role Contributor -o table | tee contributor-role-assignment.log
+# Output ACR variables from Terraform
+if [ x${CONTAINER_REGISTRY} == 'xazurecr' ]; then
 
-# # If Azure container registry is required, create an ACR and give Service Principal AcrPush role.
-# if [ x${CONTAINER_REGISTRY} == 'xazurecr' ]; then
-# 	echo "--> Checking ACR name availability"
-# 	REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
-# 	while [ ${REGISTRY_NAME_AVAIL} == false ]; do
-# 		echo "--> Name ${REGISTRY_NAME} not available. Appending 4 random characters."
-# 		REGISTRY_NAME="$(echo ${REGISTRY_NAME} | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]' | cut -c -50)$(openssl rand -hex 2)"
-# 		echo "--> New name: ${REGISTRY_NAME}"
-# 		REGISTRY_NAME_AVAIL=$(az acr check-name -n ${REGISTRY_NAME} --query nameAvailable -o tsv)
-# 	done
-# 	echo "--> Name available"
+	# Populating some variables
+	ACR_LOGIN_SERVER=$(terraform output acr_login_server)
+	ACR_ID=$(terraform output acr_id)
 
-# 	echo "--> Creating ACR"
-# 	az acr create -n $REGISTRY_NAME -g $RESOURCE_GROUP_NAME --sku $REGISTRY_SKU -o table | tee acr-create.log
-
-# 	# Populating some variables
-# 	ACR_LOGIN_SERVER=$(az acr list -g ${RESOURCE_GROUP_NAME} --query '[].{acrLoginServer:loginServer}' -o tsv)
-# 	ACR_ID=$(az acr show -n ${REGISTRY_NAME} -g ${RESOURCE_GROUP_NAME} --query 'id' -o tsv)
-
-# 	# Assigning AcrPush role to Service Principal using AcrPush's specific object-ID
-# 	echo "--> Assigning AcrPush role to Service Principal"
-# 	az role assignment create --assignee ${SP_APP_ID} --role 8311e382-0749-4cb8-b61a-304f252e45ec --scope $ACR_ID -o table | tee acrpush-role-assignment.log
-
-# 	# Reassign IMAGE_PREFIX to conform with BinderHub's expectation:
-# 	# <container-registry>/<project-id>/<prefix>-name:tag
-# 	IMAGE_PREFIX=${BINDERHUB_NAME}/${IMAGE_PREFIX}
-# fi
+	# Reassign IMAGE_PREFIX to conform with BinderHub's expectation:
+	# <container-registry>/<project-id>/<prefix>-name:tag
+	IMAGE_PREFIX=${BINDERHUB_NAME}/${IMAGE_PREFIX}
+fi
 
 # # If HTTPS is required, set up a DNS zone and empty A records
 # if [[ -n $ENABLE_HTTPS ]]; then

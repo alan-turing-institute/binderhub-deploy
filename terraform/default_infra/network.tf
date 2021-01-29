@@ -13,3 +13,10 @@ resource "azurerm_subnet" "subnet" {
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.240.0.0/16"]
 }
+
+# Assign Contributor role to virtual network
+resource "azurerm_role_assignment" "contributor" {
+  scope                = azurerm_virtual_network.vnet.id
+  role_definition_name = "Contributor"
+  principal_id         = var.az_sp_id
+}

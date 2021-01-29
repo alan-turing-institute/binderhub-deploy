@@ -47,3 +47,26 @@ variable "binderhub_name" {
   type        = string
   description = "Name of your BinderHub"
 }
+
+variable "enable_acr" {
+  type        = bool
+  description = "Deploy an Azure Container Registry"
+  default     = false
+}
+
+variable "registry_name" {
+  type        = string
+  description = "Name to assign to the Azure Container Registry"
+  default     = null
+}
+
+variable "registry_sku" {
+  type        = string
+  description = "SKU tier to deploy the Azure Container Registry with. Options are: Basic, Standard or Premium."
+  default     = "Basic"
+
+  validation {
+    condition     = contains(["Basic", "Standard", "Premium"], var.registry_sku)
+    error_message = "Argument \"registry_sku\" must be either \"Basic\", \"Standard\", or \"Premium\"."
+  }
+}

@@ -11,9 +11,9 @@
     "location": "",
     "node_count": 1,
     "vm_size": "",
-    "sp_app_id": null,
-    "sp_app_key": null,
-    "sp_tenant_id": null,
+    "sp_app_id": "",
+    "sp_app_key": "",
+    "sp_tenant_id": "",
     "log_to_blob_storage": false
   },
   "binderhub": {

@@ -11,6 +11,16 @@ module "default_infra" {
   binderhub_name = var.binderhub_name
 }
 
+module "container_registry" {
+  source         = "./container_registry"
+  resource_group = var.resource_group
+  location       = var.location
+  az_sp_id       = var.az_sp_id
+  registry_name  = var.registry_name
+  registry_sku   = var.registry_sku
+  count          = var.enable_acr ? 1 : 0
+}
+
 # Subscription
 data "azurerm_subscription" "current" {
     subscription_id = var.az_sub
